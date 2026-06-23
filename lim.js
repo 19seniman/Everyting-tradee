@@ -107,6 +107,17 @@ function extractUsername(data) {
   );
 }
 
+// Ambil balance & nilai USD dari response /api/etoken/point/account
+function extractBalance(data) {
+  if (!data || typeof data !== 'object') return null;
+  const payload = data.data || data;
+  if (payload.balance === undefined && payload.usdValue === undefined) return null;
+  return {
+    balance: payload.balance,
+    usdValue: payload.usdValue,
+  };
+}
+
 async function processAccount(account) {
   console.log(`\n========== ${account.label} ==========`);
 
@@ -132,28 +143,55 @@ async function processAccount(account) {
     if (username) {
       console.log(`👤 Username: ${username}`);
     }
+    const balanceInfo = extractBalance(pointAccount);
+    if (balanceInfo) {
+      console.log(`💎 Balance: ${balanceInfo.balance}  (≈ $${balanceInfo.usdValue})`);
+    }
     console.log('✅ Saldo/Poin:', JSON.stringify(pointAccount, null, 2));
   } catch (err) {
     console.error('❌ Gagal ambil saldo:', err.message);
   }
 }
 
-// ============================================================
-// RUNNER — proses semua akun yang terdaftar di .env secara berurutan
-// ============================================================
-(async () => {
+async function runAllAccounts() {
   const accounts = loadAccounts();
 
   if (accounts.length === 0) {
     console.error('❌ Tidak ada akun ditemukan di .env. Lihat format di .env.example');
-    process.exit(1);
+    return;
   }
 
-  console.log(`🔄 Memproses ${accounts.length} akun...`);
+  console.log(`\n🔄 [${new Date().toLocaleString()}] Memproses ${accounts.length} akun...`);
 
   for (const account of accounts) {
     await processAccount(account);
   }
 
-  console.log('\n✅ Selesai memproses semua akun.');
+  console.log(`\n✅ [${new Date().toLocaleString()}] Selesai memproses semua akun.`);
+}
+
+// ============================================================
+// RUNNER
+// ============================================================
+// Mode default: jalan SEKALI lalu keluar — cocok dipasang di
+// Windows Task Scheduler / cron supaya jalan otomatis tiap 24 jam.
+// Lihat petunjuk scheduling di bagian bawah file ini.
+//
+// Mode alternatif: set LOOP_FOREVER=true di .env supaya script
+// terus berjalan sendiri (tanpa Task Scheduler) dan otomatis
+// mengulang tiap 24 jam selama proses Node.js ini dibiarkan menyala.
+// ============================================================
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+(async () => {
+  const loopForever = (process.env.LOOP_FOREVER || '').toLowerCase() === 'true';
+
+  await runAllAccounts();
+
+  if (loopForever) {
+    console.log('\n⏳ LOOP_FOREVER aktif — script akan otomatis jalan lagi tiap 24 jam.');
+    console.log('   Biarkan jendela/terminal ini tetap terbuka.');
+    setInterval(runAllAccounts, ONE_DAY_MS);
+  }
 })();
