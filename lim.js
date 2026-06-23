@@ -2,52 +2,60 @@ require('dotenv').config();
 
 const BASE_URL = process.env.BASE_URL || 'https://hp-sbt.everything.co';
 
-// Semua kredensial sesi dikumpulkan di satu tempat agar mudah dicek/diperbarui
-const session = {
-  token: process.env.TOKEN,
-  cookie: process.env.COOKIE,
-  deviceId: process.env.DEVICE_ID,
-  visitorId: process.env.VISITOR_ID,
-};
+// Baca semua akun dari .env berdasarkan pola ACCOUNT_<n>_*
+function loadAccounts() {
+  const accounts = [];
+  let i = 1;
 
-function assertSessionComplete() {
-  const missing = Object.entries(session)
-    .filter(([, value]) => !value)
-    .map(([key]) => key);
+  while (process.env[`ACCOUNT_${i}_TOKEN`]) {
+    accounts.push({
+      label: process.env[`ACCOUNT_${i}_LABEL`] || `Akun ${i}`,
+      token: process.env[`ACCOUNT_${i}_TOKEN`],
+      cookie: process.env[`ACCOUNT_${i}_COOKIE`],
+      deviceId: process.env[`ACCOUNT_${i}_DEVICE_ID`],
+      visitorId: process.env[`ACCOUNT_${i}_VISITOR_ID`],
+    });
+    i++;
+  }
 
+  return accounts;
+}
+
+function assertAccountComplete(account) {
+  const required = ['token', 'cookie', 'deviceId', 'visitorId'];
+  const missing = required.filter((key) => !account[key]);
   if (missing.length) {
-    console.error(`❌ Variabel .env berikut belum diisi: ${missing.join(', ')}`);
-    console.error('   Lihat petunjuk "SAAT TOKEN/COOKIE EXPIRED" di atas file ini.');
-    process.exit(1);
+    throw new Error(
+      `${account.label}: variabel berikut belum diisi di .env -> ${missing.join(', ')}`
+    );
   }
 }
 
-// Header dasar yang dipakai semua request ke hp-sbt.everything.co
-function buildHeaders(extra = {}) {
+function buildHeaders(account, extra = {}) {
   return {
     'accept': 'application/json, text/plain, */*',
     'accept-language': 'en-US,en;q=0.9',
     'channel': 'minApp',
-    'cookie': session.cookie,
-    'device-id': session.deviceId,
+    'cookie': account.cookie,
+    'device-id': account.deviceId,
     'device-name': 'telegram',
     'device-type': 'web',
     'edition': '1.0.0',
     'origin': 'https://tg.everything.co',
     'platformtype': 'web',
     'referer': 'https://tg.everything.co/',
-    'token': session.token,
+    'token': account.token,
     'user-agent':
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0',
-    'visitor-id': session.visitorId,
+    'visitor-id': account.visitorId,
     ...extra,
   };
 }
 
-async function apiRequest(path, options = {}) {
+async function apiRequest(account, path, options = {}) {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...options,
-    headers: buildHeaders(options.headers || {}),
+    headers: buildHeaders(account, options.headers || {}),
   });
 
   const text = await response.text();
@@ -58,11 +66,10 @@ async function apiRequest(path, options = {}) {
     body = text;
   }
 
-  // Token/cookie kemungkinan sudah expired
   if (response.status === 401 || response.status === 403) {
     throw new Error(
-      `Sesi tampaknya sudah expired (HTTP ${response.status}). ` +
-      `Ambil ulang token/cookie dari browser dan update .env. Detail: ${JSON.stringify(body)}`
+      `Sesi ${account.label} tampaknya sudah expired (HTTP ${response.status}). ` +
+      `Ambil ulang token/cookie dari browser dan update .env.`
     );
   }
 
@@ -73,40 +80,80 @@ async function apiRequest(path, options = {}) {
   return body;
 }
 
-// Klaim reward check-in harian
-async function dailyCheckin() {
-  return apiRequest('/api/etoken/daily-checkin', {
+async function dailyCheckin(account) {
+  return apiRequest(account, '/api/etoken/daily-checkin', {
     method: 'POST',
     headers: { 'content-length': '0' },
   });
 }
 
-// Cek saldo / poin akun
-async function getPointAccount() {
-  return apiRequest('/api/etoken/point/account', {
+async function getPointAccount(account) {
+  return apiRequest(account, '/api/etoken/point/account', {
     method: 'GET',
   });
 }
 
-// ============================================================
-// RUNNER — jalankan sesuai kebutuhan
-// ============================================================
-(async () => {
-  assertSessionComplete();
+// Cari field username di response, nama field bisa beda-beda antar endpoint
+function extractUsername(data) {
+  if (!data || typeof data !== 'object') return null;
+  const payload = data.data || data;
+  return (
+    payload.nickName ||
+    payload.nickname ||
+    payload.userName ||
+    payload.username ||
+    payload.contactId ||
+    null
+  );
+}
 
-  console.log('🎁 Melakukan daily check-in...');
+async function processAccount(account) {
+  console.log(`\n========== ${account.label} ==========`);
+
   try {
-    const checkin = await dailyCheckin();
+    assertAccountComplete(account);
+  } catch (err) {
+    console.error(`❌ ${err.message}`);
+    return;
+  }
+
+  console.log('🎁 Daily check-in...');
+  try {
+    const checkin = await dailyCheckin(account);
     console.log('✅ Check-in:', JSON.stringify(checkin, null, 2));
   } catch (err) {
     console.error('❌ Check-in gagal:', err.message);
   }
 
-  console.log('\n💰 Mengambil info saldo/poin...');
+  console.log('💰 Cek saldo/poin...');
   try {
-    const account = await getPointAccount();
-    console.log('✅ Saldo/Poin:', JSON.stringify(account, null, 2));
+    const pointAccount = await getPointAccount(account);
+    const username = extractUsername(pointAccount);
+    if (username) {
+      console.log(`👤 Username: ${username}`);
+    }
+    console.log('✅ Saldo/Poin:', JSON.stringify(pointAccount, null, 2));
   } catch (err) {
     console.error('❌ Gagal ambil saldo:', err.message);
   }
+}
+
+// ============================================================
+// RUNNER — proses semua akun yang terdaftar di .env secara berurutan
+// ============================================================
+(async () => {
+  const accounts = loadAccounts();
+
+  if (accounts.length === 0) {
+    console.error('❌ Tidak ada akun ditemukan di .env. Lihat format di .env.example');
+    process.exit(1);
+  }
+
+  console.log(`🔄 Memproses ${accounts.length} akun...`);
+
+  for (const account of accounts) {
+    await processAccount(account);
+  }
+
+  console.log('\n✅ Selesai memproses semua akun.');
 })();
